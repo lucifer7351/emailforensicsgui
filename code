@@ -1,0 +1,417 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox, scrolledtext, Button
+import email
+import email.policy
+import re
+import csv
+import os
+import webbrowser
+
+class EmailForensicsApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Email Forensics Tool")
+        self.root.configure(bg="#2c3e50")
+        self.email_files = []
+        self.create_widgets()
+
+    def create_widgets(self):
+        self.frame = tk.Frame(self.root, bg="#2c3e50")
+        self.frame.pack(pady=20, padx=20)
+
+        self.upload_btn = tk.Button(self.frame, text="Upload Email Folder", command=self.upload_email, bg="#3498db", fg="black")
+        self.upload_btn.grid(row=0, column=0, pady=10)
+
+        self.analyze_selected_btn = tk.Button(self.frame, text="Analyze Selected", command=self.analyze_selected, bg="#f39c12", fg="black")
+        self.analyze_selected_btn.grid(row=0, column=1, pady=10)
+
+        self.analyze_all_btn = tk.Button(self.frame, text="Analyze All", command=self.analyze_all, bg="#e74c3c", fg="black")
+        self.analyze_all_btn.grid(row=0, column=2, pady=10)
+
+        self.export_btn = tk.Button(self.frame, text="Export Results", command=self.export_results, bg="#2ecc71", fg="black")
+        self.export_btn.grid(row=0, column=3, pady=10)
+
+        self.view_report_btn = tk.Button(self.frame, text="View HTML Report", command=self.view_html_report, bg="#9b59b6", fg="black")
+        self.view_report_btn.grid(row=0, column=4, pady=10)
+
+        self.email_info_text = scrolledtext.ScrolledText(self.frame, wrap="word", height=25, width=100, bg="#ecf0f1")
+        self.email_info_text.grid(row=1, column=0, columnspan=5, pady=10)
+
+        self.files_listbox = tk.Listbox(self.frame, height=5, width=100, bg="#ecf0f1")
+        self.files_listbox.grid(row=2, column=0, columnspan=5, pady=10)
+
+    def upload_email(self):
+        folder_path = filedialog.askdirectory(title="Select Email Folder")
+        if folder_path:
+            self.email_files = [os.path.join(folder_path, file) for file in os.listdir(folder_path) if file.endswith(".eml")]
+            self.update_files_listbox()
+
+    def update_files_listbox(self):
+        self.files_listbox.delete(0, tk.END)
+        for file_path in self.email_files:
+            self.files_listbox.insert(tk.END, os.path.basename(file_path))
+
+    def analyze_selected(self):
+        selected_files = [self.email_files[i] for i in self.files_listbox.curselection()]
+        if not selected_files:
+            messagebox.showwarning("Warning", "No email files selected.")
+            return
+
+        self.email_info_text.delete("1.0", tk.END)
+        for file_path in selected_files:
+            self.analyze_email(file_path)
+            self.email_info_text.insert(tk.END, f"Analyzing: {os.path.basename(file_path)}\n\n", "info")
+
+    def analyze_all(self):
+        if not self.email_files:
+            messagebox.showwarning("Warning", "No email files found.")
+            return
+
+        self.email_info_text.delete("1.0", tk.END)
+        for file_path in self.email_files:
+            self.analyze_email(file_path)
+            self.email_info_text.insert(tk.END, f"Analyzing: {os.path.basename(file_path)}\n\n", "info")
+
+    def analyze_email(self, file_path):
+        try:
+            with open(file_path, 'r') as file:
+                email_content = file.read()
+
+            msg = email.message_from_string(email_content, policy=email.policy.default)
+
+            email_info = {key: value for key, value in msg.items()}
+            email_info["Body"] = self.get_email_body(msg)
+
+            attachments = self.get_attachments(msg)
+            email_info["Attachments"] = "\n".join(attachments) if attachments else "No attachments"
+
+            analysis_results = self.perform_analysis(msg)
+            email_info.update(analysis_results)
+
+            self.display_email_info(email_info)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to analyze email {os.path.basename(file_path)}: {e}")
+
+    def get_email_body(self, msg):
+        if msg.is_multipart():
+            for part in msg.iter_parts():
+                if part.get_content_type() == "text/plain":
+                    return part.get_payload(decode=True).decode(part.get_content_charset())
+        else:
+            return msg.get_payload(decode=True).decode(msg.get_content_charset())
+        return ""
+
+    def get_attachments(self, msg):
+        attachments = []
+        for part in msg.iter_attachments():
+            filename = part.get_filename()
+            if filename:
+                attachments.append(filename)
+        return attachments
+
+    def perform_analysis(self, msg):
+        results = {
+            "SPF Pass": self.check_spf(msg),
+            "DKIM Pass": self.check_dkim(msg),
+            "DMARC Pass": self.check_dmarc(msg),
+            "Suspicious Links": self.check_phishing_links(msg)
+        }
+        return results
+
+    def check_spf(self, msg):
+        received = msg.get_all("Received")
+        if received:
+            for line in received:
+                if "spf=pass" in line.lower():
+                    return "Yes"
+        return "No"
+
+    def check_dkim(self, msg):
+        dkim_header = msg.get("DKIM-Signature")
+        if dkim_header:
+            if "d=" in dkim_header:
+                return "Yes"
+        return "No"
+
+    def check_dmarc(self, msg):
+        authentication_results = msg.get("Authentication-Results")
+        if authentication_results:
+            if "dmarc=pass" in authentication_results.lower():
+                return "Yes"
+        return "No"
+
+    def check_phishing_links(self, msg):
+        body = self.get_email_body(msg)
+        if not body:
+            return "No body found"
+
+        phishing_patterns = [
+            r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+",
+            r"www\.[a-z0-9]+\.[a-z]+"
+        ]
+
+        links = re.findall(phishing_patterns[0], body) + re.findall(phishing_patterns[1], body)
+        return "\n".join(links) if links else "No suspicious links found"
+
+    def display_email_info(self, email_info):
+        self.email_info_text.insert(tk.END, "---------------------------------\n", "info")
+
+        for key, value in email_info.items():
+            tag = "info"
+
+            if key in ["SPF Pass", "DKIM Pass", "DMARC Pass"]:
+                tag = "pass" if value == "Yes" else "fail"
+            elif key == "Suspicious Links":
+                if value != "No suspicious links found":
+                    tag = "warning"
+            elif key == "Attachments":
+                tag = "attachment"
+            elif key == "From":
+                if value.lower() in ["google", "microsoft", "apple", "amazon", "facebook", "twitter", "linkedin", "paypal", "ebay", "yahoo", "instagram"]:
+                    tag = "company"
+
+            self.email_info_text.insert(tk.END, f"{key}: {value}\n\n", tag)
+
+        # Tag configurations
+        self.email_info_text.tag_config("info", foreground="black")
+        self.email_info_text.tag_config("pass", foreground="#2ecc71")
+        self.email_info_text.tag_config("fail", foreground="#e74c3c")
+        self.email_info_text.tag_config("warning", foreground="#e67e22")
+        self.email_info_text.tag_config("company", foreground="blue")
+        self.email_info_text.tag_config("attachment", foreground="#34495e")
+
+    def export_results(self):
+        if not self.email_info_text.get("1.0", tk.END).strip():
+            messagebox.showwarning("Warning", "No analysis results to export.")
+            return
+
+        try:
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                title="Save Analysis Results"
+            )
+
+            if file_path:
+                with open(file_path, 'w', newline='', encoding='utf-8') as file:
+                    writer = csv.writer(file)
+                    writer.writerow(["Email File", "SPF Pass", "DKIM Pass", "DMARC Pass", "Suspicious Links", "Attachments"])
+
+                    for file_path in self.email_files:
+                        try:
+                            with open(file_path, 'r') as email_file:
+                                email_content = email_file.read()
+
+                            msg = email.message_from_string(email_content, policy=email.policy.default)
+                            analysis_results = self.perform_analysis(msg)
+
+                            attachments = self.get_attachments(msg)
+                            attachments_str = "\n".join(attachments) if attachments else "No attachments"
+
+                            writer.writerow([
+                                os.path.basename(file_path),
+                                analysis_results["SPF Pass"],
+                                analysis_results["DKIM Pass"],
+                                analysis_results["DMARC Pass"],
+                                analysis_results["Suspicious Links"],
+                                attachments_str
+                            ])
+                        except Exception as e:
+                            messagebox.showerror("Error", f"Failed to export results for {os.path.basename(file_path)}: {e}")
+
+                messagebox.showinfo("Export Successful", f"Analysis results exported to {file_path}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export analysis results: {e}")
+
+    def view_html_report(self):
+        # Check if any emails are analyzed
+        if not self.email_info_text.get("1.0", tk.END).strip():
+            messagebox.showwarning("Warning", "No analysis results to generate report.")
+            return
+
+        # Determine which emails to include in the report
+        selected_files = [self.email_files[i] for i in self.files_listbox.curselection()]
+        files_to_include = selected_files if selected_files else self.email_files
+
+        # Generate HTML report content dynamically based on analysis results
+        html_content = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Email Analysis Report</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    padding: 20px;
+                    background-color: #f0f0f0;
+                }
+                .container {
+                    max-width: 1000px;
+                    margin: 0 auto;
+                    background-color: #fff;
+                    border: 1px solid #ccc;
+                    border-radius: 5px;
+                    padding: 20px;
+                    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+                    overflow-x: auto; /* Allow horizontal scrolling on smaller screens */
+                }
+                h1 {
+                    color: #333;
+                    text-align: center;
+                }
+                table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-top: 20px;
+                }
+                th, td {
+                    padding: 10px;
+                    text-align: left;
+                    border-bottom: 1px solid #ddd;
+                }
+                th {
+                    background-color: #f2f2f2;
+                }
+                .info {
+                    color: #333;
+                    margin-bottom: 10px;
+                }
+                .pass {
+                    color: #2ecc71;
+                }
+                .fail {
+                    color: #e74c3c;
+                }
+                .warning {
+                    color: #e67e22;
+                }
+                .company {
+                    color: #9b59b6;
+                }
+                .attachment {
+                    color: #34495e;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Email Analysis Report</h1>
+                <div class="info">
+                    <p>This report contains the analysis results of the uploaded email files.</p>
+                </div>
+                <h2>Analysis Results</h2>
+                <div style="overflow-x:auto;"> <!-- Added to enable horizontal scrolling -->
+                    <table>
+                        <tr>
+                            <th>Email File</th>
+                            <th>From</th>
+                            <th>To</th>
+                            <th>Subject</th>
+                            <th>Date</th>
+                            <th>SPF Pass</th>
+                            <th>DKIM Pass</th>
+                            <th>DMARC Pass</th>
+                            <th>IP Addresses</th>
+                            <th>Suspicious Links</th>
+                            <th>Attachments</th>
+                        </tr>
+        """
+
+        # Populate table rows with actual analysis results
+        for file_path in files_to_include:
+            try:
+                with open(file_path, 'r') as email_file:
+                    email_content = email_file.read()
+
+                msg = email.message_from_string(email_content, policy=email.policy.default)
+                analysis_results = self.perform_analysis(msg)
+
+                attachments = self.get_attachments(msg)
+                attachments_str = "\n".join(attachments) if attachments else "No attachments"
+
+                # Handle suspicious links separately
+                suspicious_links = analysis_results['Suspicious Links'].split("\n")
+                num_links = len(suspicious_links)
+
+                # Extract IP addresses from email headers
+                ip_addresses = self.extract_ip_addresses(msg)
+                ip_addresses_str = "\n".join(ip_addresses) if ip_addresses else "No IP addresses found"
+
+                # Determine maximum rows needed for suspicious links
+                max_rows = max(num_links, 1)  # Ensure at least one row if no links found
+
+                # Add table row for each email file
+                for i in range(max_rows):
+                    if i == 0:
+                        html_content += f"""
+                            <tr>
+                                <td rowspan="{max_rows}">{os.path.basename(file_path)}</td>
+                                <td rowspan="{max_rows}">{msg.get('From', 'N/A')}</td>
+                                <td rowspan="{max_rows}">{msg.get('To', 'N/A')}</td>
+                                <td rowspan="{max_rows}">{msg.get('Subject', 'N/A')}</td>
+                                <td rowspan="{max_rows}">{msg.get('Date', 'N/A')}</td>
+                                <td rowspan="{max_rows}" class="{self.get_analysis_css_class(analysis_results['SPF Pass'])}">{analysis_results['SPF Pass']}</td>
+                                <td rowspan="{max_rows}" class="{self.get_analysis_css_class(analysis_results['DKIM Pass'])}">{analysis_results['DKIM Pass']}</td>
+                                <td rowspan="{max_rows}" class="{self.get_analysis_css_class(analysis_results['DMARC Pass'])}">{analysis_results['DMARC Pass']}</td>
+                                <td rowspan="{max_rows}">{ip_addresses_str}</td>
+                        """
+                    else:
+                        html_content += "<tr>"
+
+                    if i < num_links:
+                        html_content += f"<td>{suspicious_links[i]}</td>"
+                    else:
+                        html_content += "<td></td>"
+
+                    if i == 0:
+                        html_content += f"""
+                            <td rowspan="{max_rows}">{attachments_str}</td>
+                        """
+
+                    html_content += "</tr>"
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to generate report for {os.path.basename(file_path)}: {e}")
+
+        # Close the table and container div
+        html_content += """
+                    </table>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+        # Save HTML content to a temporary file
+        temp_html_file = "email_analysis_report.html"
+        with open(temp_html_file, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+
+        # Open the HTML file in the default web browser
+        webbrowser.open(f"file://{os.path.abspath(temp_html_file)}")
+
+    def extract_ip_addresses(self, msg):
+        ip_addresses = []
+        received_headers = msg.get_all('Received', [])
+        for header in received_headers:
+            ips = re.findall(r'\[([0-9.]+)\]', header)
+            ip_addresses.extend(ips)
+        return ip_addresses
+
+    def get_analysis_css_class(self, result):
+        if result == "Yes":
+            return "pass"
+        elif result == "No":
+            return "fail"
+        else:
+            return "warning"
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = EmailForensicsApp(root)
+    root.mainloop()
+
